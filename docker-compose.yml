@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  nginx:
+    build: ./nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+      - frontend
+    networks:
+      - food-order-network
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_HOST=database
+      - DATABASE_NAME=food_orders
+      - DATABASE_USER=user
+      - DATABASE_PASSWORD=password
+      - REDIS_HOST=cache
+    depends_on:
+      - database
+      - cache
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5000:5000"
+    environment:
+      - API_URL=http://api:8000
+    depends_on:
+      - api
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  database:
+    build: ./database
+    environment:
+      - POSTGRES_DB=food_orders
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  cache:
+    build: ./cache
+    ports:
+      - "6379:6379"
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  worker:
+    build: ./worker
+    environment:
+      - DATABASE_HOST=database
+      - DATABASE_NAME=food_orders
+      - DATABASE_USER=user
+      - DATABASE_PASSWORD=password
+      - REDIS_HOST=cache
+    depends_on:
+      - database
+      - cache
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  food-order-network:
+    driver: bridge
