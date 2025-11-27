@@ -1,8 +1,8 @@
-FROM python:3.9-slim
+# Development stage for testing
+FROM python:3.9-slim as development
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости
 RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-test.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
 
 COPY . .
 

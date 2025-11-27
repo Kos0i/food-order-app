@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: $DOCKERHUB_USERNAME/food-order-nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+      - frontend
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  api:
+    image: $DOCKERHUB_USERNAME/food-order-api:latest
+    environment:
+      - DATABASE_HOST=database
+      - DATABASE_NAME=food_orders
+      - DATABASE_USER=user
+      - DATABASE_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=cache
+    deploy:
+      replicas: 2
+    networks:
+      - food-order-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: $DOCKERHUB_USERNAME/food-order-frontend:latest
+    environment:
+      - API_URL=http://api:8000
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  database:
+    image: postgres:13-alpine
+    environment:
+      - POSTGRES_DB=food_orders
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+  worker:
+    image: $DOCKERHUB_USERNAME/food-order-worker:latest
+    environment:
+      - DATABASE_HOST=database
+      - DATABASE_NAME=food_orders
+      - DATABASE_USER=user
+      - DATABASE_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=cache
+    networks:
+      - food-order-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  food-order-network:
+    driver: bridge

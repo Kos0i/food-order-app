@@ -2,19 +2,25 @@ name: Food Order App CI/CD
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
+  # Стадия тестирования
   test:
     runs-on: ubuntu-latest
-    
     services:
       postgres:
-        image: postgres:13
+        image: postgres:13-alpine
         env:
-          POSTGRES_PASSWORD: password
+          POSTGRES_DB: test_food_orders
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -34,43 +40,181 @@ jobs:
           - 6379:6379
 
     steps:
-    - uses: actions/checkout@v3
-    
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-    
+        cache: 'pip'
+
     - name: Install dependencies
       run: |
         cd api
         pip install -r requirements.txt
+        pip install pytest pytest-cov requests
         cd ../frontend
         pip install -r requirements.txt
-    
+        pip install pytest
+
     - name: Run API tests
       run: |
         cd api
+        python -m pytest tests/ -v --cov=app --cov-report=xml
+
+    - name: Run Frontend tests
+      run: |
+        cd frontend
         python -m pytest tests/ -v
 
-  build-and-deploy:
-    needs: test
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./api/coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  # Стадия безопасности
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Check for secrets in code
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Стадия сборки и публикации
+  build-and-push:
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata (tags, labels)
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ secrets.DOCKERHUB_USERNAME }}/food-order-app
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push API image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./api
+        file: ./api/Dockerfile
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/food-order-api:latest
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push Frontend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        file: ./frontend/Dockerfile
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/food-order-frontend:latest
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push Worker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./worker
+        file: ./worker/Dockerfile
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/food-order-worker:latest
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Стадия деплоя
+  deploy:
+    needs: build-and-push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy to production
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USERNAME }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          cd /opt/food-order-app
+          docker-compose pull
+          docker-compose down
+          docker-compose up -d
+          docker system prune -f
+          
+          # Health check
+          sleep 30
+          curl -f http://localhost/api/health || exit 1
+          curl -f http://localhost/health || exit 1
+
+    - name: Send deployment notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: 🚀 New version of Food Order App deployed successfully!
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      if: success()
+
+  # Стадия мониторинга
+  monitoring:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: always()
     
-    - name: Build Docker images
+    steps:
+    - name: Check application health
       run: |
-        docker-compose build
-    
-    - name: Push to Docker Hub
-      run: |
-        echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-        docker-compose push
-    
-    - name: Deploy to server
-      run: |
-        echo "Deployment would happen here"
-        # ssh deploy@server 'docker-compose pull && docker-compose up -d'
+        curl -s -o /dev/null -w "%{http_code}" https://your-app.com/api/health
+      
+    - name: Notify on failure
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: ❌ Deployment failed! Check GitHub Actions logs.
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      if: failure()
