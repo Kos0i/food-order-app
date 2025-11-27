@@ -75,6 +75,31 @@ jobs:
         flags: unittests
         name: codecov-umbrella
 
+  # Стадия безопасности
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Check for secrets in code
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # Стадия сборки и публикации
   build-and-push:
     needs: [test, security]
@@ -138,58 +163,3 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-
-  # Стадия деплоя
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Deploy to production
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.PRODUCTION_HOST }}
-        username: ${{ secrets.PRODUCTION_USERNAME }}
-        key: ${{ secrets.PRODUCTION_SSH_KEY }}
-        script: |
-          cd /opt/food-order-app
-          docker-compose pull
-          docker-compose down
-          docker-compose up -d
-          docker system prune -f
-          
-          # Health check
-          sleep 30
-          curl -f http://localhost/api/health || exit 1
-          curl -f http://localhost/health || exit 1
-
-    - name: Send deployment notification
-      uses: 8398a7/action-slack@v3
-      with:
-        status: ${{ job.status }}
-        text: 🚀 New version of Food Order App deployed successfully!
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-      if: success()
-
-  # Стадия мониторинга
-  monitoring:
-    needs: deploy
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-    - name: Check application health
-      run: |
-        curl -s -o /dev/null -w "%{http_code}" https://your-app.com/api/health
-      
-    - name: Notify on failure
-      uses: 8398a7/action-slack@v3
-      with:
-        status: failure
-        text: ❌ Deployment failed! Check GitHub Actions logs.
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-      if: failure()
