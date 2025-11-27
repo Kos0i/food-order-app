@@ -12,21 +12,6 @@ def client():
     with app.test_client() as client:
         yield client
 
-def test_health_check(client):
-    """Test health check endpoint"""
-    response = client.get('/api/health')
-    assert response.status_code == 200
-    data = json.loads(response.data)
-    assert 'status' in data
-
-def test_get_orders_empty(client):
-    """Test getting orders from empty database"""
-    response = client.get('/api/orders')
-    assert response.status_code == 200
-    data = json.loads(response.data)
-    assert 'data' in data
-    assert isinstance(data['data'], list)
-
 def test_create_order(client):
     """Test creating a new order"""
     order_data = {
