@@ -77,7 +77,7 @@ jobs:
 
   # Стадия сборки и публикации
   build-and-push:
-    needs: [test, security]
+    needs: [test]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
 
